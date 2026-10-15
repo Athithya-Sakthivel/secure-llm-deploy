@@ -1,84 +1,53 @@
-# syntax=docker/dockerfile:1.7
-# =============================================================================
-# Stage 1: Builder
-# Compiles only your application-specific dependencies.
-# Uses the full CUDA "devel" image with build tools.
-# =============================================================================
-FROM nvidia/cuda:12.9.0-devel-ubuntu22.04 AS builder
+# syntax=docker/dockerfile:1.7.1@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#
+# Production vLLM runtime.
+# Base image and model revision are both pinned. Updating either pin is an
+# intentional reviewed change; builds do not resolve model HEAD dynamically.
 
-# Pin Python to a specific patch version for reproducibility.
-ARG PYTHON_VERSION=3.11.17
+FROM vllm/vllm-openai:v0.31.0-cu129@sha256:ff29e51a9457f191deb332b96fa6440584fa941aa2a548449b604e2b1e5e1eeb AS runtime
 
-ENV DEBIAN_FRONTEND=noninteractive
+USER 0:0
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python${PYTHON_VERSION} \
-    python3-pip \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+ENV HOME=/home/vllm \
+    XDG_CACHE_HOME=/home/vllm/.cache \
+    HF_HOME=/home/vllm/.cache/huggingface \
+    HF_HUB_CACHE=/home/vllm/.cache/huggingface/hub \
+    VLLM_CACHE_ROOT=/home/vllm/.cache/vllm \
+    TRITON_CACHE_DIR=/home/vllm/.cache/triton \
+    TORCHINDUCTOR_CACHE_DIR=/home/vllm/.cache/torchinductor \
+    VLLM_LOCK_FILE=/etc/vllm/model.lock \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    DO_NOT_TRACK=1 \
+    PYTHONUNBUFFERED=1 \
+    TOKENIZERS_PARALLELISM=false \
+    VLLM_LOGGING_LEVEL=INFO \
+    VLLM_HOST=0.0.0.0 \
+    VLLM_PORT=8000
 
-RUN pip install --no-cache-dir --upgrade pip wheel
+COPY --chown=0:0 --chmod=0444 model.lock /etc/vllm/model.lock
+COPY --chown=0:0 --chmod=0555 validate.py /usr/local/bin/vllm-validate
+COPY --chown=0:0 --chmod=0555 entrypoint.sh /usr/local/bin/vllm-container-entrypoint
 
-# Build wheels for your application-specific dependencies only.
-# vLLM itself will be installed from a pre-built wheel in the runtime stage.
-COPY requirements.txt .
-RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+RUN python3 /usr/local/bin/vllm-validate \
+ && install -d -o 2000 -g 0 -m 0750 /home/vllm /home/vllm/.cache \
+ && install -d -o 2000 -g 0 -m 0770 \
+      /home/vllm/.cache/huggingface \
+      /home/vllm/.cache/huggingface/hub \
+      /home/vllm/.cache/vllm \
+      /home/vllm/.cache/triton \
+      /home/vllm/.cache/torchinductor
 
-# =============================================================================
-# Stage 2: Runtime
-# Uses the minimal CUDA "runtime" image. No compilers, no build tools.
-# =============================================================================
-FROM nvidia/cuda:12.9.0-runtime-ubuntu22.04 AS runtime
+LABEL org.opencontainers.image.title="secure-llm-deploy vLLM runtime" \
+      org.opencontainers.image.version="0.31.0" \
+      org.opencontainers.image.description="vLLM CUDA 12.9 runtime with a pinned model revision" \
+      org.opencontainers.image.source="https://github.com/athithya-sakthivel/secure-llm-deploy"
 
-# Pin all versions for full reproducibility.
-ARG PYTHON_VERSION=3.11.17
-ARG VLLM_VERSION=0.31.0
+WORKDIR /home/vllm
+USER 2000:0
+EXPOSE 8000/tcp
+STOPSIGNAL SIGTERM
 
-# Create a non-root user with a high UID for Kubernetes compatibility.
-# This is a critical security control: if the process is compromised,
-# it cannot escalate to root on the host.
-RUN groupadd --system --gid 10001 appgroup && \
-    useradd --system --uid 10001 --gid appgroup --create-home --shell /bin/bash appuser
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10m --retries=3 \
+  CMD ["python3", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('VLLM_PORT', '8000') + '/health', timeout=4).close()"]
 
-# Install only the minimal runtime dependencies.
-# tini is used as an init system to handle signals properly (SIGTERM for
-# graceful shutdown in Kubernetes).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python${PYTHON_VERSION} \
-    python3-pip \
-    tini \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip install --no-cache-dir --upgrade pip
-
-# Copy application wheels from the builder stage.
-COPY --from=builder /wheels /wheels
-
-# Install application dependencies from local wheels (no network needed).
-RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt
-
-# Install vLLM from PyPI (pre-built wheel, CUDA 12.9 variant).
-# The pip resolver will select the correct wheel for the CUDA 12.9 base image.
-RUN pip install --no-cache-dir vllm==${VLLM_VERSION}
-
-# Copy application code with correct ownership.
-WORKDIR /app
-COPY --chown=appuser:appgroup . .
-
-# Switch to the non-root user.
-USER appuser
-
-# Environment variables for vLLM.
-ENV VLLM_HOST=0.0.0.0
-ENV VLLM_PORT=8000
-EXPOSE 8000
-
-# Use tini as the entrypoint for proper signal handling.
-ENTRYPOINT ["/usr/bin/tini", "--"]
-
-# Default command: launch the vLLM OpenAI-compatible server.
-# The model can be overridden at runtime.
-CMD ["python", "-m", "vllm.entrypoints.openai.api_server", \
-     "--model", "Qwen/Qwen3.8-2B-Distill-AWQ", \
-     "--host", "0.0.0.0", \
-     "--port", "8000"]
+ENTRYPOINT ["/usr/local/bin/vllm-container-entrypoint"]
