@@ -37,6 +37,11 @@ RUN python3 /usr/local/bin/vllm-validate \
       /home/vllm/.cache/triton \
       /home/vllm/.cache/torchinductor
 
+RUN apt-get update \
+    && apt-get install -y --only-upgrade linux-libc-dev \
+    && dpkg-query -W -f='${Version}\n' linux-libc-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 LABEL org.opencontainers.image.title="secure-llm-deploy vLLM runtime" \
       org.opencontainers.image.version="0.31.0" \
       org.opencontainers.image.description="vLLM CUDA 12.9 runtime with a pinned model revision" \
