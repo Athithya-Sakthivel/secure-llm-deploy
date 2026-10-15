@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+
+uv lock --check
+uv sync --locked --group dev
+
+uv run python -m compileall -q image/src/secure_llm_deploy tests
+uv run ruff check . --fix
+uv run mypy --no-incremental
+
+uv run pytest --collect-only -q
+uv run pytest -q
+
+
 cd "$(dirname "$0")"
 
 MODEL_ID="${MODEL_ID:-Qwen/Qwen2.5-3B-Instruct-AWQ}"

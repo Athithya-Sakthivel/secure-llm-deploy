@@ -10,12 +10,9 @@ import re
 import sys
 from typing import NoReturn
 
-
 LOCK_PATH = os.environ.get("VLLM_LOCK_FILE", "/etc/vllm/model.lock")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
-MODEL_ID_RE = re.compile(
-    r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
-)
+MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
 
 EXPECTED_VLLM = "0.31.0"
 EXPECTED_CUDA_PREFIX = "12.9"
@@ -53,16 +50,10 @@ def check_cuda() -> None:
     cuda_version: object = getattr(torch_version, "cuda", None)
 
     actual = cuda_version if isinstance(cuda_version, str) else ""
-    valid_version = (
-        actual == EXPECTED_CUDA_PREFIX
-        or actual.startswith(f"{EXPECTED_CUDA_PREFIX}.")
-    )
+    valid_version = actual == EXPECTED_CUDA_PREFIX or actual.startswith(f"{EXPECTED_CUDA_PREFIX}.")
 
     if not valid_version:
-        fail(
-            f"expected CUDA {EXPECTED_CUDA_PREFIX}.x, "
-            f"found {actual!r}"
-        )
+        fail(f"expected CUDA {EXPECTED_CUDA_PREFIX}.x, found {actual!r}")
 
 
 def check_lock() -> None:
@@ -83,24 +74,16 @@ def check_lock() -> None:
                 key, separator, value = line.partition("=")
 
                 if not separator:
-                    fail(
-                        f"malformed lock line {line_number}: {line!r}"
-                    )
+                    fail(f"malformed lock line {line_number}: {line!r}")
 
                 key = key.strip()
                 value = value.strip()
 
                 if key not in EXPECTED_LOCK_KEYS:
-                    fail(
-                        f"unexpected key {key!r} "
-                        f"on lock line {line_number}"
-                    )
+                    fail(f"unexpected key {key!r} on lock line {line_number}")
 
                 if key in values:
-                    fail(
-                        f"duplicate key {key!r} "
-                        f"on lock line {line_number}"
-                    )
+                    fail(f"duplicate key {key!r} on lock line {line_number}")
 
                 values[key] = value
 
@@ -119,10 +102,7 @@ def check_lock() -> None:
         fail(f"MODEL_ID is not a valid namespace/repository ID: {model_id!r}")
 
     if SHA_RE.fullmatch(revision) is None:
-        fail(
-            "MODEL_REVISION must be a 40-character lowercase "
-            f"commit SHA, got {revision!r}"
-        )
+        fail(f"MODEL_REVISION must be a 40-character lowercase commit SHA, got {revision!r}")
 
     print(f"validated lock: {model_id}@{revision}")
 

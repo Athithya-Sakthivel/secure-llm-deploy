@@ -1,0 +1,110 @@
+repos:
+  # ---------------------------------------------------------------------------
+  # Secrets
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # ---------------------------------------------------------------------------
+  # Repository hygiene
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args:
+          - "--maxkb=1024"
+
+  # ---------------------------------------------------------------------------
+  # Python
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 01a675ea018f2fb714478a5ffb83fcea8374bb06 # v0.15.21
+    hooks:
+      - id: ruff
+        args:
+          - "--fix"
+        files: ^agents/.*\.py$
+
+      - id: ruff-format
+        files: ^agents/.*\.py$
+
+  # ---------------------------------------------------------------------------
+  # Local repository hooks
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      # -----------------------------------------------------------------------
+      # Go: rivulet/ingestion-worker
+      # -----------------------------------------------------------------------
+      - id: go-fmt
+        name: gofmt (ingestion-worker)
+        entry: gofmt -w
+        language: system
+        files: ^rivulet/ingestion-worker/.*\.go$
+
+      - id: go-vet
+        name: go vet (ingestion-worker)
+        entry: bash -c 'cd rivulet/ingestion-worker && go vet ./...'
+        language: system
+        files: ^rivulet/ingestion-worker/.*\.go$
+        pass_filenames: false
+
+      - id: go-mod-tidy
+        name: go mod tidy (ingestion-worker)
+        entry: bash -c 'cd rivulet/ingestion-worker && go mod tidy'
+        language: system
+        files: ^rivulet/ingestion-worker/go\.(mod|sum)$
+        pass_filenames: false
+
+      # -----------------------------------------------------------------------
+      # Java: rivulet/api-gateway
+      # -----------------------------------------------------------------------
+      - id: spotless
+        name: Spotless (api-gateway)
+        entry: bash -c 'cd rivulet/api-gateway && ./mvnw -q spotless:check'
+        language: system
+        files: ^rivulet/api-gateway/src/.*\.java$
+        pass_filenames: false
+
+      # -----------------------------------------------------------------------
+      # Frontend: rivulet/frontend
+      #
+      # Uses the ESLint executable installed by rivulet/frontend/package.json
+      # and package-lock.json. Only source files are passed to ESLint, so
+      # eslint.config.js and vite.config.ts are never explicitly linted.
+      # -----------------------------------------------------------------------
+      - id: eslint-frontend
+        name: ESLint (rivulet/frontend)
+        entry: npm --prefix rivulet/frontend exec -- eslint --max-warnings 0
+        language: system
+        files: ^rivulet/frontend/src/.*\.(js|jsx|ts|tsx)$
+        pass_filenames: true
+
+      # -----------------------------------------------------------------------
+      # Frontend: agents/ui
+      #
+      # Uses the ESLint executable installed by agents/ui/package.json and
+      # package-lock.json. Only source files are passed to ESLint.
+      # -----------------------------------------------------------------------
+      - id: eslint-agents-ui
+        name: ESLint (agents/ui)
+        entry: npm --prefix agents/ui exec -- eslint --max-warnings 0
+        language: system
+        files: ^agents/ui/src/.*\.(js|jsx|ts|tsx)$
+        pass_filenames: true
+
+      # -----------------------------------------------------------------------
+      # Prettier: agents/ui
+      # -----------------------------------------------------------------------
+      - id: prettier-agents-ui
+        name: Prettier (agents/ui)
+        entry: npm --prefix agents/ui exec -- prettier --write
+        language: system
+        files: ^agents/ui/src/.*\.(js|jsx|ts|tsx|css|scss|md)$
+        pass_filenames: true

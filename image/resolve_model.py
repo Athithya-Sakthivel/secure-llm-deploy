@@ -15,11 +15,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-
 SHA_RE = re.compile(r"[0-9a-f]{40}")
-MODEL_ID_RE = re.compile(
-    r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
-)
+MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*")
 HF_API = "https://huggingface.co/api/models/{}"
 
 
@@ -47,10 +44,7 @@ def resolve(model_id: str) -> str:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload: object = json.load(response)
     except urllib.error.HTTPError as exc:
-        sys.exit(
-            f"ERROR: Hugging Face API returned HTTP {exc.code} "
-            f"for {model_id!r}"
-        )
+        sys.exit(f"ERROR: Hugging Face API returned HTTP {exc.code} for {model_id!r}")
     except urllib.error.URLError as exc:
         sys.exit(f"ERROR: could not reach Hugging Face API: {exc.reason}")
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -72,9 +66,7 @@ def resolve(model_id: str) -> str:
 
 def main() -> None:
     """Parse arguments, resolve the revision, and write the lock file."""
-    parser = argparse.ArgumentParser(
-        description="Resolve a Hugging Face model ID to a commit SHA."
-    )
+    parser = argparse.ArgumentParser(description="Resolve a Hugging Face model ID to a commit SHA.")
     parser.add_argument(
         "--model-id",
         required=True,
@@ -93,10 +85,7 @@ def main() -> None:
     output_path = args.output.strip()
 
     if MODEL_ID_RE.fullmatch(model_id) is None:
-        sys.exit(
-            "ERROR: MODEL_ID must be a valid namespace/repository ID; "
-            f"got {model_id!r}"
-        )
+        sys.exit(f"ERROR: MODEL_ID must be a valid namespace/repository ID; got {model_id!r}")
 
     if not output_path:
         sys.exit("ERROR: output path must not be empty")
