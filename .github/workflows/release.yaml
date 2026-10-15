@@ -23,7 +23,6 @@ jobs:
     name: Build, scan, sign, and attest
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-
     permissions:
       contents: read
       packages: write
@@ -85,9 +84,9 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-          # Reuse layers across runs.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Persistent cache shared across GitHub-hosted runners.
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}:buildcache,mode=max
 
           # Attach build provenance and an SBOM to the pushed image.
           provenance: mode=max
@@ -103,6 +102,7 @@ jobs:
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
           vuln-type: os,library
+          scanners: vuln
           exit-code: "0"
           timeout: 15m0s
         env:
@@ -124,13 +124,11 @@ jobs:
 
           critical_count="$(jq '
             [
-              .runs[] as $run
+              .runs[]? as $run
               | $run.results[]? as $result
               | select(
-                  (
-                    $run.tool.driver.rules[$result.ruleIndex].properties.tags
-                    // []
-                  ) | index("CRITICAL")
+                  (($run.tool.driver.rules[$result.ruleIndex].properties.tags // [])
+                  | index("CRITICAL")) != null
                 )
             ] | length
           ' trivy-results.sarif)"
@@ -181,9 +179,8 @@ jobs:
           IMAGE_REF: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-
           cosign verify \
-            --certificate-identity-regexp '(?i)^https://github\.com/athithya-sakthivel/secure-llm-deploy/\.github/workflows/release\.yml@refs/(heads/main|tags/v.*)$' \
+            --certificate-identity-regexp '(?i)^https://github\.com/Athithya-Sakthivel/secure-llm-deploy/\.github/workflows/release\.ya?ml@refs/(heads/main|tags/v.*)$' \
             --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
             "${IMAGE_REF}"
 
