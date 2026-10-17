@@ -1,3 +1,4 @@
+
 """Unit tests for environment settings and runtime configuration validation."""
 
 from __future__ import annotations
@@ -11,29 +12,79 @@ from secure_llm_deploy.config import Settings
 
 
 def test_default_settings_use_baseline_mode() -> None:
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.serve_mode == "baseline"
     assert settings.served_model_name == "secure-llm-deploy"
     assert settings.gateway_host == "0.0.0.0"
     assert settings.gateway_port == 8000
+
+    assert settings.target_model_path == Path("/opt/models/target")
+    assert settings.target_tokenizer_path == Path(
+        "/opt/models/target/tokenizer.json"
+    )
+    assert settings.eagle_model_path == Path("/opt/models/eagle")
+    assert settings.guard_model_path == Path(
+        "/opt/models/guard/onnx/model.onnx"
+    )
+    assert settings.guard_tokenizer_path == Path(
+        "/opt/models/guard/tokenizer.json"
+    )
+    assert settings.guard_label_mapping_path == Path(
+        "/opt/models/guard/label_mapping.json"
+    )
+
     assert settings.vllm_host == "127.0.0.1"
     assert settings.vllm_port == 8001
+
+    assert settings.max_input_tokens == 3072
+    assert settings.default_max_tokens == 512
+    assert settings.max_output_tokens == 1024
+    assert settings.max_model_len == 4096
+
+    assert settings.vllm_max_num_seqs == 2
+    assert settings.gpu_memory_utilization == pytest.approx(0.80)
+    assert settings.speculative_tokens == 2
+
     assert settings.rate_limit_requests == 5
     assert settings.rate_limit_window_seconds == 60
-    assert settings.max_input_tokens == 7168
-    assert settings.max_output_tokens == 1024
-    assert settings.max_model_len == 8192
+
     assert settings.gateway_api_key is None
     assert settings.vllm_api_key is None
 
 
 @pytest.mark.parametrize(
-    "field_name",
+    ("environment_name", "field_name", "raw_value", "expected"),
     [
-        "gateway_api_key",
-        "vllm_api_key",
+        ("VLLM_MAX_MODEL_LEN", "max_model_len", "6144", 6144),
+        ("MAX_MODEL_LEN", "max_model_len", "6144", 6144),
+        (
+            "VLLM_GPU_MEMORY_UTILIZATION",
+            "gpu_memory_utilization",
+            "0.75",
+            0.75,
+        ),
+        ("GPU_MEMORY_UTILIZATION", "gpu_memory_utilization", "0.75", 0.75),
+        ("VLLM_NUM_SPECULATIVE_TOKENS", "speculative_tokens", "6", 6),
+        ("SPECULATIVE_TOKENS", "speculative_tokens", "6", 6),
     ],
+)
+def test_runtime_environment_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+    environment_name: str,
+    field_name: str,
+    raw_value: str,
+    expected: int | float,
+) -> None:
+    monkeypatch.setenv(environment_name, raw_value)
+    settings = Settings(_env_file=None)
+
+    assert getattr(settings, field_name) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["gateway_api_key", "vllm_api_key"],
 )
 def test_validate_runtime_requires_both_api_keys(
     valid_settings: Settings,
@@ -64,10 +115,7 @@ def test_validate_runtime_rejects_identical_api_keys(
 
 @pytest.mark.parametrize(
     "field_name",
-    [
-        "gateway_api_key",
-        "vllm_api_key",
-    ],
+    ["gateway_api_key", "vllm_api_key"],
 )
 def test_validate_runtime_rejects_short_api_keys(
     valid_settings: Settings,
@@ -101,6 +149,9 @@ def test_validate_runtime_rejects_short_api_keys(
         ("max_output_tokens", 0),
         ("max_model_len", 255),
         ("gpu_memory_utilization", 1.0),
+        ("speculative_tokens", 0),
+        ("speculative_tokens", 9),
+        ("vllm_max_num_seqs", 0),
         ("serve_mode", "unknown"),
         ("vllm_host", "0.0.0.0"),
     ],
@@ -122,7 +173,7 @@ def test_validate_runtime_rejects_context_budget_overflow(
 
     with pytest.raises(
         ValueError,
-        match="MAX_INPUT_TOKENS \\+ MAX_OUTPUT_TOKENS exceeds MAX_MODEL_LEN",
+        match=r"MAX_INPUT_TOKENS \+ MAX_OUTPUT_TOKENS exceeds MAX_MODEL_LEN",
     ):
         settings.validate_runtime()
 
@@ -185,13 +236,21 @@ def test_validate_runtime_rejects_blank_vllm_executable(
         settings.validate_runtime()
 
 
+def test_validate_runtime_does_not_require_real_model_weights(
+    valid_settings: Settings,
+) -> None:
+    """Baseline configuration tests do not load real model weights."""
+    valid_settings.validate_runtime()
+
+
 def test_validate_runtime_rejects_missing_target_tokenizer(
     valid_settings: Settings,
     tmp_path: Path,
 ) -> None:
-    missing_tokenizer = tmp_path / "missing-tokenizer.json"
     settings = valid_settings.model_copy(
-        update={"target_tokenizer_path": missing_tokenizer}
+        update={
+            "target_tokenizer_path": tmp_path / "missing-tokenizer.json"
+        }
     )
 
     with pytest.raises(
@@ -209,7 +268,7 @@ def test_validate_runtime_rejects_missing_target_config(
 
     with pytest.raises(
         ValueError,
-        match="Required model artifact is missing: config.json",
+        match=r"Required model artifact is missing: .*config\.json",
     ):
         valid_settings.validate_runtime()
 
@@ -222,7 +281,7 @@ def test_validate_runtime_rejects_missing_guard_artifact(
 
     with pytest.raises(
         ValueError,
-        match="Required model artifact is missing: model.onnx",
+        match=r"Required model artifact is missing: .*model\.onnx",
     ):
         valid_settings.validate_runtime()
 
@@ -240,22 +299,64 @@ def test_validate_runtime_rejects_missing_onnx_external_data(
         valid_settings.validate_runtime()
 
 
-def test_validate_runtime_rejects_missing_draft_model_in_speculative_mode(
+def test_validate_runtime_rejects_missing_eagle_config_in_speculative_mode(
     valid_settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings = valid_settings.model_copy(
         update={
             "serve_mode": "speculative",
-            "draft_model_path": tmp_path / "missing-draft-model",
+            "eagle_model_path": tmp_path / "missing-eagle-model",
         }
     )
 
     with pytest.raises(
         ValueError,
-        match="DRAFT_MODEL_PATH must contain config.json",
+        match=r"Required EAGLE-3 artifact is missing: .*config\.json",
     ):
         settings.validate_runtime()
+
+
+def test_validate_runtime_rejects_missing_eagle_weights_in_speculative_mode(
+    valid_settings: Settings,
+    model_artifacts: dict[str, Path],
+) -> None:
+    model_artifacts["eagle_weights"].unlink()
+    settings = valid_settings.model_copy(
+        update={"serve_mode": "speculative"}
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Required EAGLE-3 artifact is missing: .*model\.safetensors",
+    ):
+        settings.validate_runtime()
+
+
+def test_speculative_mode_does_not_require_eagle_tokenizer(
+    valid_settings: Settings,
+) -> None:
+    """EAGLE-3 is an auxiliary speculator, not a standalone draft LM."""
+    settings = valid_settings.model_copy(
+        update={"serve_mode": "speculative"}
+    )
+
+    settings.validate_runtime()
+    assert not (settings.eagle_model_path / "tokenizer.json").exists()
+
+
+def test_baseline_mode_does_not_require_eagle_artifacts(
+    valid_settings: Settings,
+    tmp_path: Path,
+) -> None:
+    settings = valid_settings.model_copy(
+        update={
+            "serve_mode": "baseline",
+            "eagle_model_path": tmp_path / "eagle-not-installed",
+        }
+    )
+
+    settings.validate_runtime()
 
 
 def test_sensitive_values_ignore_blank_lines(

@@ -1,2 +1,11 @@
-MODEL_ID=Qwen/Qwen2.5-3B-Instruct-AWQ
-MODEL_REVISION=3559b226e8ce77211e2c1bd7ddfb7686fec4d6dd
+# Immutable Hugging Face model revisions used to build the image.
+# These are repository commit SHAs, not SHA-256 hashes of individual files.
+
+TARGET_MODEL_ID=Qwen/Qwen3-4B
+TARGET_MODEL_REVISION=1cfa9a7208912126459214e8b04321603b3df60c
+
+EAGLE_MODEL_ID=AngelSlim/Qwen3-4B_eagle3
+EAGLE_MODEL_REVISION=616a3645a78a917068520ab69882b22c9c419096
+
+GUARD_MODEL_ID=Athithya117/Vela-1.0-Encoder-307M-Guard
+GUARD_MODEL_REVISION=702622b1a6e9ec3e2bff7a7583e7eda5a4b9e9db

@@ -1,99 +1,218 @@
-# Production GHCR release pipeline
+# Secure LLM Deploy — production image
 
-This bundle targets `athithya-sakthivel/secure-llm-deploy`, publishes to
-`ghcr.io/athithya-sakthivel/secure-llm-deploy`, and has no GitHub Environments.
-The workflow runs only for pushes to `main` and version-like tags matching `v*`.
-All third-party workflow actions are pinned to full commit SHAs with the
-corresponding release version recorded in a comment.
+Secure LLM Deploy packages a local vLLM inference server behind an authenticated
+FastAPI gateway. The image contains pinned model artifacts, a CPU ONNX prompt
+guard, request/response safety filters, PII redaction, rate limiting, auditing,
+and two inference modes.
 
-## 1. Create the two repository secrets
+## Architecture
 
-Create a **classic** GitHub Personal Access Token with only `write:packages`
-for publishing this image. Add `read:packages` only if your use case also needs
-to pull private packages. Do not grant the `repo` scope merely because the UI
-suggests it. Follow your organization/account's SSO requirements if applicable.
+The container exposes only the gateway on port 8000.
 
-From the repository root, use GitHub CLI. The token is read without echo and is
-not embedded in the command line or shell history:
+- **Gateway:** authenticates callers and applies request limits, guard checks,
+  PII redaction, output filtering, and audit logging.
+- **vLLM:** launched and managed by `VLLMProcess`, listening only on
+  `127.0.0.1:8001`.
+- **Target model:** pinned `Qwen/Qwen3-4B`, served using FP16.
+- **Speculator:** pinned `AngelSlim/Qwen3-4B_eagle3`, enabled only in
+  `SERVE_MODE=speculative` using vLLM's `eagle3` speculative-decoding method.
+- **Prompt guard:** pinned `vllm-sr/Vela-1.0-Encoder-307M-Guard`, executed by
+  ONNX Runtime on CPU.
+
+The image's default is `SERVE_MODE=baseline`. The same image supports
+`SERVE_MODE=speculative` at runtime; it does not need to be rebuilt to change
+between those modes.
+
+The committed `image/model.lock` is the source of truth for the target,
+EAGLE-3 speculator, and guard repository revisions. Image builds must not
+resolve model revisions from moving branches.
+
+## Build the image locally
+
+Build from the **repository root**, not from `image/`:
 
 ```bash
-read -rsp 'GHCR_PAT: ' GHCR_PAT
-printf '\n'
-printf '%s' "$GHCR_PAT" | gh secret set GHCR_PAT
-unset GHCR_PAT
-gh secret set GHCR_USER_NAME --body 'athithya-sakthivel'
-````
-
-Check that the repository is `athithya-sakthivel/secure-llm-deploy` before running the commands. Do not create GitHub Environments.
-
-GitHub recommends `GITHUB_TOKEN` for GHCR packages linked to the same repository when possible. This workflow uses the two requested secrets to authenticate to GHCR. The workflow itself also needs `packages: write` for artifact attestations. If the image package already exists, open the package settings and confirm that it is connected to this repository and that Actions has package write access. The `org.opencontainers.image.source` label is also included to help link the image package to the source repository.
-
-## 2. Install the files
-
-Copy `image/` into the repository's existing `image/` directory and copy the `.github/` contents into the repository's `.github/` directory. Review and commit all changes, including `image/model.lock`. Do not commit tokens.
-
-The default branch must be named `main`; otherwise change the branch filter in `.github/workflows/release.yml`. The workflow only publishes when run in the specified repository. The `IMAGE_NAME` value is intentionally explicit rather than derived from a potentially mixed-case repository name.
-
-## 3. What CI does
-
-1. Checks that the required secrets are present and the configured user is the expected lowercase GHCR namespace.
-2. Builds `linux/amd64` with the digest-pinned vLLM base, the committed model lock, BuildKit provenance, BuildKit SBOM, and GitHub Actions build cache.
-3. Pushes a source-SHA tag to GHCR and captures the pushed registry digest.
-4. Scans that precise `image@sha256:...` reference with Trivy. HIGH or CRITICAL OS/library vulnerabilities fail the job, including findings without a fix.
-5. Generates an SPDX JSON SBOM for the same digest.
-6. Signs the image digest with keyless Cosign and verifies that the signing certificate was issued to this repository's workflow on `main` or a `v*` tag.
-7. On public repositories, publishes build-provenance and SBOM attestations to GHCR. The SPDX SBOM and Trivy SARIF report are retained as workflow artifacts. Public repositories also publish the Trivy SARIF results to GitHub Code Scanning.
-8. Prints the exact deployment reference to the Actions run summary.
-
-The image tag is a convenience, not an integrity boundary. The digest is the canonical identity. Deploy the exact `ghcr.io/athithya-sakthivel/secure-llm-deploy@sha256:...` reference emitted by the workflow, and require signature/attestation verification in your deployment process.
-
-## 4. Verify after a release
-
-Set `IMAGE` to the exact digest printed in the workflow summary:
-
-```
-export IMAGE='ghcr.io/athithya-sakthivel/secure-llm-deploy@sha256:REPLACE_WITH_DIGEST'
-
-cosign verify \
-  --certificate-identity-regexp '^https://github\.com/athithya-sakthivel/secure-llm-deploy/\.github/workflows/release\.yml@refs/(heads/main|tags/v.*)$' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  "$IMAGE"
-
-# GitHub-hosted artifact attestation verification (also checks the source repo):
-gh attestation verify "oci://${IMAGE}" --repo athithya-sakthivel/secure-llm-deploy
-
-# Verify the SPDX SBOM attestation
-gh attestation verify "oci://${IMAGE}" \
-  --repo athithya-sakthivel/secure-llm-deploy \
-  --predicate-type https://spdx.dev/Document/v2.3
+docker buildx build \
+  --platform linux/amd64 \
+  --load \
+  --file image/Dockerfile \
+  --tag secure-llm-deploy:local \
+  .
 ```
 
-GitHub artifact-attestation steps are deliberately skipped for private repositories to avoid failing on plans where GitHub does not offer artifact attestations for private/internal repositories. GitHub's current requirements make those attestations available for private/internal repos only on GitHub Enterprise Cloud. The GitHub Code Scanning SARIF upload is likewise limited to public repositories in this workflow; the report remains available as a workflow artifact for private repositories. BuildKit provenance and SBOM generation, plus Cosign image signing, still run for private repositories. To use GitHub artifact attestations for a private repository, first confirm your plan entitlement and then remove the `if: github.event.repository.private == false` conditions from the two `actions/attest` steps.
+The public model repositories do not require a Hugging Face token. If a reviewed
+build needs a token for gated/private model access, pass it using BuildKit's
+secret mount rather than a Docker `ARG` or an image environment variable:
 
-## 5. Operational requirements outside CI
-
-- Pin the deployed image by digest and verify its signature before deployment.
-- Keep the image package private unless public distribution is intended.
-- Restrict production network ingress; loopback-only host binding is suitable for a local smoke test, not a remote API endpoint. Use TLS and an auth/rate-limit gateway for remote consumers.
-- Supply `VLLM_API_KEY` or enforce authentication at a trusted gateway. Avoid exposing the raw vLLM port directly to the internet.
-- Do not set `VLLM_TRUST_REMOTE_CODE=1` except for a reviewed model that requires it. Treat model upgrades as supply-chain changes and review `model.lock` diffs.
-- Test on the exact production GPU/driver stack, including startup time, memory pressure, throughput, context length, and graceful shutdown.
-- Monitor for newly disclosed vulnerabilities and update pinned base images and action SHAs by reviewed Dependabot PRs. A SHA pin makes an action immutable; it does not automatically keep it patched.
-- The scanner gate is intentionally strict. If it fails, review findings and update/replace the affected component or document a narrow, expiring exception with a reason rather than globally ignoring all unfixed issues.
-
-## Upstream documentation checked
-
-- GitHub GHCR authentication and package access: [https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
-- GitHub container publishing action guidance: [https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)
-- GitHub artifact attestations: [https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
-- Docker image build best practices and digest pinning: [https://docs.docker.com/build/building/best-practices/](https://docs.docker.com/build/building/best-practices/)
-- Cosign container signing: [https://docs.sigstore.dev/cosign/signing/signing_with_containers/](https://docs.sigstore.dev/cosign/signing/signing_with_containers/)
-- Trivy GitHub Action: [https://github.com/aquasecurity/trivy-action](https://github.com/aquasecurity/trivy-action)
-- Build Push Action: [https://github.com/docker/build-push-action](https://github.com/docker/build-push-action)
-
+```bash
+docker buildx build \
+  --platform linux/amd64 \
+  --load \
+  --file image/Dockerfile \
+  --secret id=hf_token,src="$HOME/.cache/huggingface/token" \
+  --tag secure-llm-deploy:local \
+  .
 ```
 
-One implementation caveat: these are the complete files from the generated bundle, not a claim that a real GHCR release has succeeded. Before relying on this in production, run the workflow in the target repository and confirm the pinned action versions, attestation inputs, token permissions, and registry behavior against the current upstream documentation. The actual GPU startup and inference path also needs testing on your deployment hardware.
+Keep any token source file outside Git and protect it with filesystem
+permissions. The secret mount is available only during the model-download
+build step.
+
+The image build downloads models into `/opt/models/{target,eagle,guard}`,
+validates their manifests and required files, and makes the artifacts
+read-only. It then installs the gateway using the root `pyproject.toml` and
+`uv.lock`. A lockfile change must be intentional and reviewed.
+
+## Runtime configuration
+
+The container requires these two environment variables:
+
+| Variable | Requirement |
+|---|---|
+| `GATEWAY_API_KEY` | Client-facing Bearer token, at least 32 characters |
+| `VLLM_API_KEY` | Internal vLLM Bearer token, at least 32 characters, distinct from the gateway key |
+
+Use separately generated secrets. Do not reuse the GHCR publishing token or
+the Hugging Face token as an API key. Runtime validation rejects missing,
+short, or identical API keys.
+
+Important configuration variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SERVE_MODE` | `baseline` | `baseline` or `speculative` |
+| `GATEWAY_HOST` | `0.0.0.0` | Gateway bind address |
+| `GATEWAY_PORT` | `8000` | Public gateway port |
+| `VLLM_HOST` | `127.0.0.1` | Internal server bind address; other values are rejected |
+| `VLLM_PORT` | `8001` | Internal server port |
+| `VLLM_MAX_MODEL_LEN` | `4096` | vLLM model context limit |
+| `VLLM_GPU_MEMORY_UTILIZATION` | `0.80` | vLLM GPU-memory allocation fraction |
+| `VLLM_NUM_SPECULATIVE_TOKENS` | `2` | EAGLE-3 speculative token count |
+| `VLLM_MAX_NUM_SEQS` | `2` | Maximum concurrent vLLM sequences |
+
+These values are initial settings for testing a 16 GB T4 GPU, not a guarantee
+of memory fit or throughput. Increasing context length, concurrent sequences,
+or speculative tokens changes memory pressure and latency. Tune one variable
+at a time using representative requests.
+
+The gateway validates the input/output budget against `MAX_MODEL_LEN`.
+A request must fit the gateway's input and output limits as well as vLLM's
+actual model context limit.
+
+The EAGLE-3 speculator is optional in baseline mode but required in speculative
+mode. Both modes require the target and guard artifacts. The EAGLE checkpoint
+does not need a separate draft-model tokenizer.
+
+## Local smoke tests
+
+Run the smoke script on a machine with Docker, NVIDIA Container Toolkit, a
+working NVIDIA driver, and enough GPU memory for the pinned target and
+speculator.
+
+Run baseline mode:
+
+```bash
+SERVE_MODE=baseline ./scripts/smoke-tests.sh
 ```
 
+Run EAGLE-3 mode:
 
+```bash
+SERVE_MODE=speculative ./scripts/smoke-tests.sh
+```
+
+Run both modes sequentially:
+
+```bash
+SERVE_MODE=both ./scripts/smoke-tests.sh
+```
+
+The script checks:
+
+1. The container becomes ready.
+2. Liveness works.
+3. `/v1/models` rejects unauthenticated requests.
+4. Authenticated model listing works.
+5. Non-streaming completions return valid output.
+6. Streaming completions produce the terminal SSE `[DONE]` event.
+7. A synthetic prompt-injection request is blocked.
+
+By default, the script binds to `127.0.0.1` on an automatically assigned host
+port, creates temporary API keys, and removes the test container at exit.
+It does not send the synthetic test prompt to an external service.
+
+Useful overrides:
+
+```bash
+IMAGE=secure-llm-deploy:local \
+SMOKE_STARTUP_TIMEOUT=1200 \
+SERVE_MODE=both \
+./scripts/smoke-tests.sh
+```
+
+`SMOKE_TEST_GUARD=0` skips the known-attack smoke test; use that only for
+diagnostics and do not treat the run as a complete security smoke test.
+`SMOKE_KEEP_CONTAINER=1` leaves successful test containers running. When
+keeping containers for both modes, use automatic host port allocation rather
+than one fixed `SMOKE_PORT`.
+
+The smoke tests exercise actual inference and therefore require a working GPU.
+Passing unit tests or building the image does not prove that model startup
+succeeds on a particular driver/GPU combination.
+
+## Release pipeline and GHCR
+
+The release workflow is `.github/workflows/release.yaml`. When building this
+Dockerfile, its `docker/build-push-action` step must specify:
+
+```yaml
+with:
+  context: .
+  file: image/Dockerfile
+```
+
+Keep the action pinned to its reviewed full commit SHA. The workflow must
+continue to build for `linux/amd64`, push to
+`ghcr.io/athithya-sakthivel/secure-llm-deploy`, scan the exact image digest,
+enforce the configured Trivy HIGH/CRITICAL vulnerability gate, generate an
+SBOM and provenance, sign with keyless Cosign, and verify the resulting
+signature. Do not weaken the security gate simply to make a build pass.
+
+The current workflow uses these repository secrets:
+
+- `GHCR_USER_NAME`: the lowercase GHCR publishing namespace.
+- `GHCR_PAT`: a classic GitHub token with the minimum required `write:packages`
+  permission for this workflow's registry authentication.
+
+These are registry-publishing credentials, not runtime inference keys. Do not
+place any of these secrets in `image/model.lock`, the Dockerfile, or an image
+build argument. The model lock contains repository IDs and immutable commit
+SHAs only.
+
+Deploy the exact digest reported by a successful release, rather than relying
+only on the mutable `latest` tag. Verify the signature and provenance before
+deploying it.
+
+## Operational security
+
+- Expose only gateway port 8000. Do not publish container port 8001.
+- Keep vLLM bound to loopback and do not run the inference process directly as
+  the public API server.
+- Use TLS and suitable ingress/network controls for remote clients.
+- Keep API keys in a runtime secret manager or protected environment; do not
+  commit them or include them in command-line arguments.
+- Keep model artifacts local and offline at runtime. Changes to the pinned
+  models, vLLM base image, or dependencies are supply-chain changes and should
+  be reviewed.
+- Use readiness as a dependency-aware signal. Liveness alone does not prove
+  that the guard and model are ready to serve requests.
+- Update pinned image/action dependencies and rerun security scans regularly.
+
+## Upstream references
+
+- [vLLM Docker deployment](https://docs.vllm.ai/en/v0.31.0/deployment/docker/)
+- [vLLM EAGLE speculative decoding](https://docs.vllm.ai/en/v0.31.0/features/speculative_decoding/eagle/)
+- [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+- [GitHub artifact attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
+- [Cosign container signing](https://docs.sigstore.dev/cosign/signing/signing_with_containers/)
+- [Trivy GitHub Action](https://github.com/aquasecurity/trivy-action)

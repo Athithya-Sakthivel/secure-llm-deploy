@@ -19,6 +19,32 @@ env:
   IMAGE_NAME: ghcr.io/athithya-sakthivel/secure-llm-deploy
 
 jobs:
+  test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      # Pin the action to its immutable commit; the tag is a human-readable annotation.
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Install a pinned uv version.
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: true
+
+      # Install the latest available Python 3.14 patch release.
+      - name: Install Python 3.14
+        run: uv python install 3.14
+
+      # Assumes uv.lock is committed to the repository.
+      - name: Install dependencies
+        run: uv sync --locked --python 3.14
+
+      - name: Run tests
+        run: uv run --locked --python 3.14 pytest
+
   build-scan-sign:
     name: Build, scan, sign, and attest
     runs-on: ubuntu-24.04

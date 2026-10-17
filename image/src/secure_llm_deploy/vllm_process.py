@@ -46,9 +46,8 @@ class VLLMProcess:
         self.settings = settings
         self._process: asyncio.subprocess.Process | _ChildProcess | None = None
 
-
     def build_command(self) -> list[str]:
-        """Build the command used to launch the OpenAI-compatible vLLM API."""
+        """Build the OpenAI-compatible vLLM command for the selected serve mode."""
         executable = shutil.which(self.settings.vllm_executable)
         if executable is None:
             raise VLLMProcessError(
@@ -65,6 +64,8 @@ class VLLMProcess:
             str(self.settings.vllm_port),
             "--served-model-name",
             self.settings.served_model_name,
+            "--dtype",
+            "half",  # Explicit FP16 for the 16 GB NVIDIA T4 profile.
             "--max-model-len",
             str(self.settings.max_model_len),
             "--max-num-seqs",
@@ -76,10 +77,14 @@ class VLLMProcess:
         ]
 
         if self.settings.serve_mode == "speculative":
+            # This project deliberately supports EAGLE-3 only for speculative
+            # decoding. Do not use method="draft_model": the checkpoint is an
+            # EAGLE head, not a second full language model.
             speculative_config = {
-                "method": "draft_model",
-                "model": str(self.settings.draft_model_path),
+                "method": "eagle3",
+                "model": str(self.settings.eagle_model_path),
                 "num_speculative_tokens": self.settings.speculative_tokens,
+                "draft_tensor_parallel_size": 1,
             }
             command.extend(
                 [
@@ -90,11 +95,9 @@ class VLLMProcess:
 
         return command
 
-
     def _command(self) -> list[str]:
         """Backward-compatible alias for :meth:`build_command`."""
         return self.build_command()
-
 
     @staticmethod
     def _child_environment() -> dict[str, str]:
@@ -109,7 +112,6 @@ class VLLMProcess:
             "PRIVATE_KEY",
             "CREDENTIAL",
         )
-
         for name in list(environment):
             normalized_name = name.upper()
             if any(marker in normalized_name for marker in sensitive_markers):
@@ -118,10 +120,7 @@ class VLLMProcess:
         environment["HF_HUB_OFFLINE"] = "1"
         environment["TRANSFORMERS_OFFLINE"] = "1"
         environment["TOKENIZERS_PARALLELISM"] = "false"
-
         return environment
-
-
 
     async def start(self) -> asyncio.subprocess.Process:
         """Start vLLM without blocking on API readiness."""
@@ -147,14 +146,13 @@ class VLLMProcess:
         self._process = process
         return process
 
-
     def is_running(self) -> bool:
         """Return whether the managed vLLM process has not exited."""
         process = self._process
         return process is not None and process.returncode is None
 
     async def stop(self) -> None:
-        """Ask vLLM to exit, then force-kill it if graceful shutdown times out."""
+        """Request graceful shutdown, force-killing the process group on timeout."""
         process = self._process
         if process is None:
             return
