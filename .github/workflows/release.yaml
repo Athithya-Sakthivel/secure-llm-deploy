@@ -131,6 +131,7 @@ jobs:
           severity: HIGH,CRITICAL
           vuln-type: os,library
           scanners: vuln
+          trivyignores: .trivyignore.yaml
           exit-code: "0"
           timeout: 15m0s
         env:

@@ -1,0 +1,70 @@
+
+vulnerabilities:
+  - id: CVE-2026-63825
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: >-
+      Temporary exception for the Ubuntu 24.04 linux-libc-dev development
+      headers package. Trivy reports no fixed version. This exception does
+      not address vulnerabilities in the host's running Linux kernel.
+
+  - id: CVE-2026-64523
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: "Temporary package-scoped exception; track Ubuntu kernel remediation."
+
+  - id: CVE-2026-68426
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: "Temporary package-scoped exception; track Ubuntu kernel remediation."
+
+  - id: CVE-2026-89530
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: "Temporary package-scoped exception; track Ubuntu kernel remediation."
+
+  - id: CVE-2026-89652
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: "Temporary package-scoped exception; track Ubuntu kernel remediation."
+
+  - id: CVE-2026-89659
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: "Temporary package-scoped exception; track Ubuntu kernel remediation."
+
+  - id: CVE-2026-89708
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: "Temporary package-scoped exception; track Ubuntu kernel remediation."
+
+  - id: CVE-2026-90037
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: "Temporary package-scoped exception; track Ubuntu kernel remediation."
+
+  - id: CVE-2026-90162
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: "Temporary package-scoped exception; track Ubuntu kernel remediation."
+
+  - id: CVE-2026-93221
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: "Temporary package-scoped exception; track Ubuntu kernel remediation."
+
+  - id: CVE-2026-98365
+    purls:
+      - "pkg:deb/ubuntu/linux-libc-dev"
+    expired_at: 2026-12-31
+    statement: "Temporary package-scoped exception; track Ubuntu kernel remediation."
