@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1.7.1@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
-# Update the tag and digest together, after reviewing the upstream release.
+# Keep the tag and digest synchronized after reviewing the upstream release.
 FROM vllm/vllm-openai:v0.31.0-cu129@sha256:ff29e51a9457f191deb332b96fa6440584fa941aa2a548449b604e2b1e5e1eeb
 
 USER 0:0
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 WORKDIR /opt/app
 
-# Keep these paths synchronized with image/model.lock, the build scripts, and
-# secure_llm_deploy.config.Settings. Runtime model loading is offline.
+# Reuse the Python runtime shipped with vLLM. uv is also already present in
+# this digest-pinned base image, so do not pip-install/replace either one.
 ENV SERVE_MODE=baseline \
     MODEL_ROOT=/opt/models \
     MODEL_LOCK_FILE=/etc/vllm/models.lock \
@@ -42,9 +42,11 @@ ENV SERVE_MODE=baseline \
     TOKENIZERS_PARALLELISM=false \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     UV_PROJECT_ENVIRONMENT=/opt/app/.venv \
     UV_CACHE_DIR=/root/.cache/uv \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0 \
+    UV_COMPILE_BYTECODE=1 \
     PYTHONPATH=/opt/app/image/src \
     PATH=/opt/app/.venv/bin:${PATH}
 
@@ -54,7 +56,6 @@ LABEL org.opencontainers.image.source="https://github.com/Athithya-Sakthivel/sec
 RUN install -d -m 0755 \
       /etc/vllm \
       /opt/app/image \
-      /opt/uv/python \
       /opt/models/target \
       /opt/models/eagle \
       /opt/models/guard \
@@ -62,88 +63,97 @@ RUN install -d -m 0755 \
       /tmp/vllm-cache \
       /tmp/torchinductor
 
-# Resolve the interpreter behind the pinned image's `vllm` entry point once.
-# The temporary wrapper lets build steps use that same interpreter without
-# assuming a hard-coded Python path. It is removed before the image is sealed.
+# Resolve both (a) the interpreter used by the base image's vllm entry point
+# and (b) its underlying Python executable. Keep the first path intact because
+# it may point into a vLLM virtual environment and is needed for Hub downloads.
+# The gateway venv is based on the same Python version but stays package-isolated.
 RUN set -Eeuo pipefail; \
     VLLM_BIN="$(command -v vllm || true)"; \
     [[ -n "${VLLM_BIN}" && -x "${VLLM_BIN}" ]] || { printf 'ERROR: vllm executable is missing from the base image\n' >&2; exit 1; }; \
     VLLM_SHEBANG="$(head -n 1 "${VLLM_BIN}")"; \
-    [[ "${VLLM_SHEBANG}" == '#!'* ]] || { printf 'ERROR: cannot identify the Python interpreter used by vllm\n' >&2; exit 1; }; \
-    VLLM_INTERPRETER="${VLLM_SHEBANG#\#!}"; \
-    if [[ "${VLLM_INTERPRETER}" == /usr/bin/env\ * ]]; then \
-      VLLM_INTERPRETER="${VLLM_INTERPRETER#/usr/bin/env }"; \
+    [[ "${VLLM_SHEBANG}" == '#!'* ]] || { printf 'ERROR: cannot identify Python interpreter used by vllm\n' >&2; exit 1; }; \
+    if [[ "${VLLM_SHEBANG}" == '#!/usr/bin/env '* ]]; then \
+      VLLM_INTERPRETER="${VLLM_SHEBANG#\#!/usr/bin/env }"; \
+      if [[ "${VLLM_INTERPRETER}" == -S\ * ]]; then VLLM_INTERPRETER="${VLLM_INTERPRETER#-S }"; fi; \
       VLLM_INTERPRETER="${VLLM_INTERPRETER%% *}"; \
       VLLM_PYTHON="$(command -v "${VLLM_INTERPRETER}" || true)"; \
     else \
+      VLLM_INTERPRETER="${VLLM_SHEBANG#\#!}"; \
       VLLM_PYTHON="${VLLM_INTERPRETER%% *}"; \
     fi; \
-    [[ -x "${VLLM_PYTHON}" ]] || { printf 'ERROR: vLLM Python interpreter is not executable: %s\n' "${VLLM_PYTHON}" >&2; exit 1; }; \
-    printf '#!/bin/sh\nexec "%s" "$@"\n' "${VLLM_PYTHON}" > /usr/local/bin/vllm-python; \
-    chmod 0555 /usr/local/bin/vllm-python
+    [[ -n "${VLLM_PYTHON}" && -x "${VLLM_PYTHON}" ]] || { printf 'ERROR: vLLM Python interpreter is not executable: %s\n' "${VLLM_PYTHON}" >&2; exit 1; }; \
+    APP_PYTHON="$("${VLLM_PYTHON}" -c 'import sys; print(getattr(sys, "_base_executable", sys.executable))')"; \
+    [[ -n "${APP_PYTHON}" && -x "${APP_PYTHON}" ]] || { printf 'ERROR: base Python executable is not available: %s\n' "${APP_PYTHON}" >&2; exit 1; }; \
+    VLLM_VERSION="$("${VLLM_PYTHON}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"; \
+    APP_VERSION="$("${APP_PYTHON}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"; \
+    [[ "${VLLM_VERSION}" == "${APP_VERSION}" ]] || { printf 'ERROR: vLLM Python %s differs from base Python %s\n' "${VLLM_VERSION}" "${APP_VERSION}" >&2; exit 1; }; \
+    "${VLLM_PYTHON}" -c 'import sys, torch, vllm; from importlib.metadata import version; print("vLLM interpreter:", sys.executable); print("Python:", sys.version.split()[0]); print("PyTorch:", torch.__version__); print("vLLM:", version("vllm"))'; \
+    "${APP_PYTHON}" -c 'import sys; assert (3, 12) <= sys.version_info[:2] < (3, 15), f"Unsupported Python version: {sys.version}"; print("Gateway venv base Python:", sys.version.split()[0])'; \
+    printf '%s\n' "${VLLM_PYTHON}" > /etc/vllm/vllm-python.path; \
+    printf '%s\n' "${APP_PYTHON}" > /etc/vllm/python-base.path; \
+    chmod 0444 /etc/vllm/vllm-python.path /etc/vllm/python-base.path; \
+    uv --version
 
-# Copy dependency metadata first. The lock must be up-to-date; --locked is
-# intentional so builds cannot silently resolve a different dependency graph.
+# Copy project metadata before dependencies so source changes do not invalidate
+# this layer. Build from the repository root, because these files live there.
 COPY --chown=0:0 pyproject.toml uv.lock README.md ./
+
+# Dependencies first for better layer caching. --locked deliberately fails if
+# pyproject.toml and uv.lock disagree; it never silently resolves new versions.
 RUN --mount=type=cache,target=/root/.cache/uv \
     set -Eeuo pipefail; \
-    /usr/local/bin/vllm-python -m pip install --no-cache-dir --disable-pip-version-check 'uv==0.13.1'; \
-    uv --version | grep -Fx 'uv 0.13.1'; \
-    uv python install 3.13; \
-    uv sync --locked --no-dev --no-install-project --python 3.13; \
+    APP_PYTHON="$(cat /etc/vllm/python-base.path)"; \
+    uv sync --locked --no-dev --no-install-project --python "${APP_PYTHON}"; \
     /opt/app/.venv/bin/python -c 'import numpy, onnxruntime, tokenizers'
 
-# The lock is parsed as KEY=VALUE data, never sourced as shell code. The model
-# download and validation scripts are part of the build context and repository.
+# All files below are relative to the repository-root build context.
 COPY --chown=0:0 image/model.lock /etc/vllm/models.lock
 COPY --chown=0:0 image/download_models.py image/validate.py /opt/app/image/
 RUN chmod 0444 /etc/vllm/models.lock /opt/app/image/download_models.py /opt/app/image/validate.py
 
-# Download model snapshots at immutable commit revisions. BuildKit mounts an
-# optional token only for this instruction; no Hub token is saved in ENV or a
-# later layer. Public repositories should build without a token.
+# Model downloads happen at build time against immutable commit revisions.
+# An optional Hugging Face token is mounted as a BuildKit secret and is not
+# persisted in ENV or any image layer. Public model repositories need no token.
 RUN --mount=type=secret,id=hf_token,required=false \
     set -Eeuo pipefail; \
-    /usr/local/bin/vllm-python -c 'import huggingface_hub' || { printf 'ERROR: huggingface_hub is unavailable in the vLLM Python environment\n' >&2; exit 1; }; \
+    VLLM_PYTHON="$(cat /etc/vllm/vllm-python.path)"; \
+    "${VLLM_PYTHON}" -c 'import huggingface_hub'; \
     if [[ -r /run/secrets/hf_token ]]; then export HF_TOKEN="$(</run/secrets/hf_token)"; fi; \
     export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0; \
-    /usr/local/bin/vllm-python /opt/app/image/download_models.py; \
+    "${VLLM_PYTHON}" /opt/app/image/download_models.py; \
     unset HF_TOKEN || true; \
     export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1; \
     /opt/app/.venv/bin/python /opt/app/image/validate.py --model-dir /opt/models --lock-file /etc/vllm/models.lock; \
     find /tmp/huggingface -mindepth 1 -delete
 
-# Copy app code after the model layer so ordinary source changes do not force
-# multi-gigabyte model downloads to repeat.
+# Copy app code only after model downloads so ordinary source edits do not
+# invalidate the multi-gigabyte model-download layer.
 COPY --chown=0:0 image/src/ /opt/app/image/src/
 COPY --chown=0:0 image/entrypoint.sh /opt/app/image/entrypoint.sh
 
-# Install the package from the committed lock, remove the temporary package
-# manager from the base interpreter, and make application/model assets read-only.
-# Preserve executable mode on venv launchers and the installed Python runtime.
+# Install the gateway as a non-editable package; keep its dependencies locked.
+# Smoke-import the gateway stack before sealing the image.
 RUN --mount=type=cache,target=/root/.cache/uv \
     set -Eeuo pipefail; \
-    uv sync --locked --no-dev --no-editable --python 3.13; \
+    APP_PYTHON="$(cat /etc/vllm/python-base.path)"; \
+    uv sync --locked --no-dev --no-editable --python "${APP_PYTHON}"; \
     test -x /opt/app/.venv/bin/uvicorn; \
-    /usr/local/bin/vllm-python -m pip uninstall -y uv; \
-    rm -f /usr/local/bin/vllm-python; \
+    /opt/app/.venv/bin/python -c 'import fastapi, httpx, numpy, onnxruntime, pydantic, pydantic_settings, tokenizers, uvicorn; import secure_llm_deploy.main; print("Gateway import smoke test passed.")'; \
     chmod 0555 /opt/app/image/entrypoint.sh; \
     find /opt/app/image/src -type d -exec chmod 0555 {} +; \
     find /opt/app/image/src -type f -exec chmod 0444 {} +; \
     find /opt/app/.venv -type d -exec chmod 0555 {} +; \
     find /opt/app/.venv -type f -perm /111 -exec chmod 0555 {} +; \
     find /opt/app/.venv -type f ! -perm /111 -exec chmod 0444 {} +; \
-    find /opt/uv/python -type d -exec chmod 0555 {} +; \
-    find /opt/uv/python -type f -perm /111 -exec chmod 0555 {} +; \
-    find /opt/uv/python -type f ! -perm /111 -exec chmod 0444 {} +; \
     find /opt/models -type d -exec chmod 0555 {} +; \
     find /opt/models -type f -exec chmod 0444 {} +; \
     chmod 0444 /etc/vllm/models.lock; \
+    rm -f /etc/vllm/vllm-python.path /etc/vllm/python-base.path; \
     chown -R 2000:0 /tmp/huggingface /tmp/vllm-cache /tmp/torchinductor; \
     chmod 0770 /tmp/huggingface /tmp/vllm-cache /tmp/torchinductor
 
-# One gateway worker owns and supervises one vLLM child process. Only port 8000
-# is published; vLLM remains bound to loopback at 127.0.0.1:8001.
+# The pinned vLLM image supports UID 2000 in group 0. Gateway process owns and
+# supervises one vLLM child; publish only port 8000, with vLLM on loopback.
 USER 2000:0
 EXPOSE 8000
 
