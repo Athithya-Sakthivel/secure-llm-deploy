@@ -7,6 +7,21 @@ USER 0:0
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 WORKDIR /opt/app
 
+# Patch the OS package with a published Ubuntu fix. Do this in the same RUN as
+# apt-get update so the package index cannot be reused from a stale layer.
+# Fail closed if the configured Ubuntu repositories do not supply the minimum
+# fixed version identified by the Trivy findings.
+RUN set -Eeuo pipefail; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --only-upgrade linux-libc-dev; \
+    LINUX_LIBC_DEV_VERSION="$(dpkg-query -W -f='${Version}' linux-libc-dev)"; \
+    printf 'linux-libc-dev installed version: %s\n' "${LINUX_LIBC_DEV_VERSION}"; \
+    dpkg --compare-versions "${LINUX_LIBC_DEV_VERSION}" ge '6.8.0-147.147' || { \
+      printf 'ERROR: linux-libc-dev %s is older than required fix 6.8.0-147.147\n' "${LINUX_LIBC_DEV_VERSION}" >&2; \
+      exit 1; \
+    }; \
+    rm -rf /var/lib/apt/lists/*
+
 # Reuse the Python runtime shipped with vLLM. uv is also already present in
 # this digest-pinned base image, so do not pip-install/replace either one.
 ENV SERVE_MODE=baseline \
@@ -93,6 +108,20 @@ RUN set -Eeuo pipefail; \
     printf '%s\n' "${APP_PYTHON}" > /etc/vllm/python-base.path; \
     chmod 0444 /etc/vllm/vllm-python.path /etc/vllm/python-base.path; \
     uv --version
+
+# LMCache is an optional vLLM integration and this deployment does not configure
+# its connector or multiprocess cache server. Remove it instead of replacing a
+# native CUDA/PyTorch extension with a wheel whose ABI is not validated against
+# this exact pinned vLLM image. Also fail if package/module files remain.
+RUN set -Eeuo pipefail; \
+    VLLM_PYTHON="$(cat /etc/vllm/vllm-python.path)"; \
+    "${VLLM_PYTHON}" -m pip uninstall --yes lmcache; \
+    if "${VLLM_PYTHON}" -m pip show lmcache >/dev/null 2>&1; then \
+      printf 'ERROR: lmcache distribution is still installed\n' >&2; \
+      exit 1; \
+    fi; \
+    "${VLLM_PYTHON}" -c 'import importlib.util; assert importlib.util.find_spec("lmcache") is None, "lmcache module remains installed"'; \
+    "${VLLM_PYTHON}" -c 'import torch, vllm; print("vLLM smoke test passed after removing optional lmcache.", "torch=" + torch.__version__)'
 
 # Copy project metadata before dependencies so source changes do not invalidate
 # this layer. Build from the repository root, because these files live there.
