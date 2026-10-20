@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -11,7 +10,6 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from secure_llm_deploy.config import Settings
-
 
 SETTINGS_ENV_ALIASES = {
     "VLLM_MAX_MODEL_LEN",
@@ -35,10 +33,13 @@ SETTINGS_ENV_FIELDS = {
     "EAGLE_MODEL_PATH",
     "GUARD_MODEL_PATH",
     "GUARD_TOKENIZER_PATH",
-    "GUARD_LABEL_MAPPING_PATH",
+    "GUARD_CONFIG_PATH",
     "GUARD_THRESHOLD",
     "GUARD_MAX_INPUT_TOKENS",
+    "GUARD_WINDOW_TOKENS",
     "GUARD_INTRA_OP_THREADS",
+    "GUARD_FAILURE_POLICY",
+    "GUARD_OVERLONG_POLICY",
     "MAX_CONCURRENT_GUARD_EVALUATIONS",
     "REQUEST_MAX_BODY_BYTES",
     "MAX_MESSAGES",
@@ -71,9 +72,7 @@ SETTINGS_ENV_FIELDS = {
 
 
 @pytest.fixture(autouse=True)
-def clean_settings_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def clean_settings_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent environment variables from leaking into settings tests."""
     for name in SETTINGS_ENV_FIELDS | SETTINGS_ENV_ALIASES:
         monkeypatch.delenv(name, raising=False)
@@ -81,14 +80,13 @@ def clean_settings_environment(
 
 @pytest.fixture
 def artifacts(tmp_path: Path) -> dict[str, Path]:
-    """Create lightweight placeholder artifacts for runtime settings tests."""
+    """Create placeholder artifacts for runtime settings tests; no model is loaded."""
     models_dir = tmp_path / "models"
     target_dir = models_dir / "target"
     eagle_dir = models_dir / "eagle"
     guard_dir = models_dir / "guard"
-    guard_onnx_dir = guard_dir / "onnx"
 
-    for directory in (target_dir, eagle_dir, guard_dir, guard_onnx_dir):
+    for directory in (target_dir, eagle_dir, guard_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     tokenizer_data: dict[str, Any] = {
@@ -104,7 +102,10 @@ def artifacts(tmp_path: Path) -> dict[str, Path]:
             "type": "WordLevel",
             "vocab": {
                 "[UNK]": 0,
-                "test": 1,
+                "[CLS]": 1,
+                "[SEP]": 2,
+                "[PAD]": 3,
+                "test": 4,
             },
             "unk_token": "[UNK]",
         },
@@ -130,47 +131,79 @@ def artifacts(tmp_path: Path) -> dict[str, Path]:
     eagle_config.write_text(
         json.dumps(
             {
-                "architectures": ["Eagle3LlamaForCausalLM"],
-                "model_type": "llama",
-                "draft_vocab_size": 32000,
+                "architectures": ["Eagle3DraftModel"],
+                "speculators_model_type": "eagle3",
+                "eagle31": True,
+                "speculators_config": {"algorithm": "eagle3"},
+                "auto_map": {"AutoConfig": "config.EagleConfig"},
+                "draft_vocab_size": 151936,
                 "vocab_size": 151936,
             }
         ),
         encoding="utf-8",
     )
 
-    # These bytes are placeholders for settings/process tests only.
-    # They are not loadable model weights and must never reach inference.
+    eagle_python = eagle_dir / "config.py"
+    eagle_python.write_text(
+        "# Placeholder only; never imported by these tests.\n",
+        encoding="utf-8",
+    )
+
+    # Non-empty fake weights satisfy path validation only; never used for inference.
     eagle_weights = eagle_dir / "model.safetensors"
     eagle_weights.write_bytes(b"test-only-placeholder-eagle-weights")
 
-    guard_model = guard_onnx_dir / "model.onnx"
+    guard_model = guard_dir / "model.QUInt8.quant.onnx"
     guard_model.write_bytes(b"test-only-placeholder-onnx")
-
-    guard_data = guard_onnx_dir / "model.onnx.data"
-    guard_data.write_bytes(b"test-only-placeholder-external-data")
 
     guard_tokenizer = guard_dir / "tokenizer.json"
     guard_tokenizer.write_text(json.dumps(tokenizer_data), encoding="utf-8")
 
-    guard_label_mapping = guard_dir / "label_mapping.json"
-    guard_label_mapping.write_text(
+    guard_config = guard_dir / "config.json"
+    guard_config.write_text(
         json.dumps(
             {
-                "id2label": {
-                    "0": "benign",
-                    "1": "prompt_injection",
-                }
+                "architectures": ["DebertaV2ForSequenceClassification"],
+                "model_type": "deberta-v2",
+                "num_labels": 2,
+                "max_position_embeddings": 512,
+                "pad_token_id": 0,
+                "id2label": {"0": "BENIGN", "1": "MALICIOUS"},
+                "label2id": {"BENIGN": 0, "MALICIOUS": 1},
             }
         ),
         encoding="utf-8",
     )
 
-    guard_config = guard_dir / "config.json"
-    guard_config.write_text(
-        json.dumps({"model_type": "test-guard"}),
+    guard_tokenizer_config = guard_dir / "tokenizer_config.json"
+    guard_tokenizer_config.write_text(
+        json.dumps(
+            {
+                "cls_token": "[CLS]",
+                "sep_token": "[SEP]",
+                "pad_token": "[PAD]",
+            }
+        ),
         encoding="utf-8",
     )
+
+    special_tokens = guard_dir / "special_tokens_map.json"
+    special_tokens.write_text(
+        json.dumps(
+            {
+                "cls_token": "[CLS]",
+                "sep_token": "[SEP]",
+                "pad_token": "[PAD]",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    guard_license = guard_dir / "LICENSE"
+    guard_license.write_text("test fixture only\n", encoding="utf-8")
+
+    guard_notice = guard_dir / "NOTICE"
+    guard_notice.write_text("test fixture only\n", encoding="utf-8")
 
     return {
         "models_dir": models_dir,
@@ -179,19 +212,22 @@ def artifacts(tmp_path: Path) -> dict[str, Path]:
         "target_tokenizer": target_tokenizer,
         "eagle_dir": eagle_dir,
         "eagle_config": eagle_config,
+        "eagle_python": eagle_python,
         "eagle_weights": eagle_weights,
         "guard_dir": guard_dir,
-        "guard_config": guard_config,
         "guard_model": guard_model,
-        "guard_data": guard_data,
         "guard_tokenizer": guard_tokenizer,
-        "guard_label_mapping": guard_label_mapping,
+        "guard_config": guard_config,
+        "guard_tokenizer_config": guard_tokenizer_config,
+        "guard_special_tokens": special_tokens,
+        "guard_license": guard_license,
+        "guard_notice": guard_notice,
     }
 
 
 @pytest.fixture
 def model_artifacts(artifacts: dict[str, Path]) -> dict[str, Path]:
-    """Compatibility alias for model-artifact tests."""
+    """Compatibility alias used by model-artifact tests."""
     return artifacts
 
 
@@ -199,19 +235,15 @@ def model_artifacts(artifacts: dict[str, Path]) -> dict[str, Path]:
 def valid_settings(artifacts: dict[str, Path]) -> Settings:
     """Create settings backed by temporary placeholder artifacts."""
     return Settings(
-        gateway_api_key=SecretStr(
-            "test-gateway-api-key-00000000000000000000"
-        ),
-        vllm_api_key=SecretStr(
-            "test-vllm-api-key-000000000000000000000000"
-        ),
+        gateway_api_key=SecretStr("test-gateway-api-key-00000000000000000000"),
+        vllm_api_key=SecretStr("test-vllm-api-key-000000000000000000000000"),
         serve_mode="baseline",
         target_model_path=artifacts["target_dir"],
         target_tokenizer_path=artifacts["target_tokenizer"],
         eagle_model_path=artifacts["eagle_dir"],
         guard_model_path=artifacts["guard_model"],
         guard_tokenizer_path=artifacts["guard_tokenizer"],
-        guard_label_mapping_path=artifacts["guard_label_mapping"],
+        guard_config_path=artifacts["guard_config"],
         sensitive_strings="SYNTHETIC_SECRET_ALPHA_001",
     )
 
@@ -219,9 +251,7 @@ def valid_settings(artifacts: dict[str, Path]) -> Settings:
 @pytest.fixture
 def auth_headers(valid_settings: Settings) -> dict[str, str]:
     """Provide valid client-facing authentication headers."""
-    return {
-        "Authorization": f"Bearer {valid_settings.gateway_key}",
-    }
+    return {"Authorization": f"Bearer {valid_settings.gateway_key}"}
 
 
 @pytest.fixture
@@ -232,6 +262,21 @@ def valid_request(valid_settings: Settings) -> dict[str, Any]:
         "messages": [{"role": "user", "content": "Hello."}],
         "max_tokens": 16,
     }
+
+
+class FakeEncoding:
+    """Minimal tokenizer encoding compatible with the gateway's token counter."""
+
+    def __init__(self, ids: list[int]) -> None:
+        self.ids = ids
+
+
+class FakeTokenizer:
+    """Deterministic whitespace tokenizer for gateway tests."""
+
+    def encode(self, text: str, *, add_special_tokens: bool = False) -> FakeEncoding:
+        del add_special_tokens
+        return FakeEncoding(list(range(len(text.split()))))
 
 
 class FakeGuardResult:
@@ -248,21 +293,30 @@ class FakeGuardResult:
         self.blocked = blocked
         self.score = score
         self.input_tokens = input_tokens
-        self.label = label or (
-            "prompt_injection" if blocked else "benign"
-        )
+        self.tokens_scanned = input_tokens
+        self.chunks_evaluated = 1 if input_tokens else 0
+        self.truncated = False
+        self.error_code: str | None = None
+        self.reason = "threshold_exceeded" if blocked else "below_threshold"
+        self.label = label or ("prompt_injection" if blocked else "benign")
+
+    @property
+    def allowed(self) -> bool:
+        return not self.blocked
 
 
 class FakeGuard:
     """Controllable guard fake; no ONNX session is loaded."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
         self.calls: list[str] = []
         self.blocked = False
         self.score = 0.0
         self.exception: Exception | None = None
         self.ready = True
         self.is_ready = True
+        self.tokenizer = FakeTokenizer()
 
     @staticmethod
     def _contains_attack_phrase(text: str) -> bool:
@@ -279,22 +333,17 @@ class FakeGuard:
 
     def classify(self, text: str) -> FakeGuardResult:
         self.calls.append(text)
-
         if self.exception is not None:
             raise self.exception
 
         phrase_detected = self._contains_attack_phrase(text)
         is_blocked = self.blocked or phrase_detected
-
-        if phrase_detected and not self.blocked:
-            result_score = 1.0
-        else:
-            result_score = self.score
-
+        result_score = 1.0 if phrase_detected and not self.blocked else self.score
+        input_tokens = max(1, len(text.split()))
         return FakeGuardResult(
             blocked=is_blocked,
             score=result_score,
-            input_tokens=max(1, len(text.split())),
+            input_tokens=input_tokens,
         )
 
     def evaluate(self, text: str) -> FakeGuardResult:
@@ -311,7 +360,7 @@ class FakeGuard:
 
 
 class FakeStreamingResponse:
-    """Mutable line-based fake matching the streaming handler's interface."""
+    """Mutable line-based fake matching the streaming handler interface."""
 
     def __init__(
         self,
@@ -322,9 +371,7 @@ class FakeStreamingResponse:
     ) -> None:
         self.lines = list(lines or [])
         self.status_code = status_code
-        self.headers = headers or {
-            "content-type": "text/event-stream",
-        }
+        self.headers = headers or {"content-type": "text/event-stream"}
         self.closed = False
         self.is_success = 200 <= status_code < 300
 
@@ -340,14 +387,10 @@ class FakeStreamingResponse:
         for line in self.lines:
             yield line
 
-    async def aiter_bytes(
-        self,
-        chunk_size: int | None = None,
-    ) -> AsyncIterator[bytes]:
+    async def aiter_bytes(self, chunk_size: int | None = None) -> AsyncIterator[bytes]:
         content = self.content
         if not content:
             return
-
         size = chunk_size or max(1, len(content))
         for offset in range(0, len(content), size):
             yield content[offset : offset + size]
@@ -369,29 +412,18 @@ def _default_stream_lines() -> list[str]:
         "choices": [
             {
                 "index": 0,
-                "delta": {
-                    "role": "assistant",
-                    "content": "Hello from the fake model.",
-                },
+                "delta": {"role": "assistant", "content": "Hello from the fake model."},
                 "finish_reason": None,
             }
         ],
     }
-
     final_chunk = {
         "id": "chatcmpl-stream-test",
         "object": "chat.completion.chunk",
         "created": 1,
         "model": "secure-llm-deploy",
-        "choices": [
-            {
-                "index": 0,
-                "delta": {},
-                "finish_reason": "stop",
-            }
-        ],
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
     }
-
     return [
         f"data: {json.dumps(chunk, separators=(',', ':'))}",
         "",
@@ -403,12 +435,12 @@ def _default_stream_lines() -> list[str]:
 
 
 class FakeUpstream:
-    """Controllable fake implementing the methods used by main.py."""
+    """Controllable fake implementing methods used by main.py."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
         self.calls: list[dict[str, Any]] = []
         self.request_ids: list[str] = []
-
         self.response_payload: dict[str, Any] = {
             "id": "chatcmpl-test",
             "object": "chat.completion",
@@ -424,13 +456,8 @@ class FakeUpstream:
                     "finish_reason": "stop",
                 }
             ],
-            "usage": {
-                "prompt_tokens": 1,
-                "completion_tokens": 1,
-                "total_tokens": 2,
-            },
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
-
         self.completion_error: Exception | None = None
         self.stream_open_error: Exception | None = None
         self.ready = True
@@ -438,49 +465,30 @@ class FakeUpstream:
         self.closed = False
         self.stream_response = FakeStreamingResponse(_default_stream_lines())
 
-    async def wait_until_ready(
-        self,
-        *,
-        process_is_running: Any,
-    ) -> None:
+    async def wait_until_ready(self, *, process_is_running: Any) -> None:
         if not process_is_running():
             raise RuntimeError("vLLM exited during startup")
-
         self.ready = True
         self.is_ready = True
 
-    def _record_call(
-        self,
-        payload: dict[str, Any],
-        request_id: str,
-    ) -> None:
+    def _record_call(self, payload: dict[str, Any], request_id: str) -> None:
         self.calls.append(payload)
         self.request_ids.append(request_id)
 
     async def chat_completion(
-        self,
-        payload: dict[str, Any],
-        *,
-        request_id: str,
+        self, payload: dict[str, Any], *, request_id: str
     ) -> dict[str, Any]:
         self._record_call(payload, request_id)
-
         if self.completion_error is not None:
             raise self.completion_error
-
         return self.response_payload
 
     async def open_chat_completion_stream(
-        self,
-        payload: dict[str, Any],
-        *,
-        request_id: str,
+        self, payload: dict[str, Any], *, request_id: str
     ) -> FakeStreamingResponse:
         self._record_call(payload, request_id)
-
         if self.stream_open_error is not None:
             raise self.stream_open_error
-
         return self.stream_response
 
     async def aclose(self) -> None:
@@ -493,9 +501,8 @@ class FakeUpstream:
 class FakeVLLMProcess:
     """Mutable fake process for startup and health tests."""
 
-    _SHUTDOWN_TIMEOUT_SECONDS = 20.0
-
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
         self._running = False
         self.pid = 12345
         self.returncode: int | None = None
@@ -516,9 +523,11 @@ class FakeVLLMProcess:
         return self._running and self.returncode is None
 
     async def start(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
         self.running = True
 
     async def stop(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
         self._running = False
         if self.returncode is None:
             self.returncode = 0
@@ -527,6 +536,7 @@ class FakeVLLMProcess:
         await self.stop()
 
     async def wait(self, *args: Any, **kwargs: Any) -> int:
+        del args, kwargs
         self._running = False
         if self.returncode is None:
             self.returncode = 0
@@ -577,7 +587,6 @@ def app(
         "VLLMProcess",
         lambda *args, **kwargs: fake_process,
     )
-
     return main_module.create_app(valid_settings)
 
 

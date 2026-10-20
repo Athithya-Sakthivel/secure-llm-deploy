@@ -1,11 +1,11 @@
-# Immutable Hugging Face model revisions used to build the image.
-# These are repository commit SHAs, not SHA-256 hashes of individual files.
+# Immutable Hugging Face model identities used by the image build.
+# This file is parsed as KEY=VALUE data; it is not sourced as shell code.
 
-TARGET_MODEL_ID=Qwen/Qwen3-4B
-TARGET_MODEL_REVISION=1cfa9a7208912126459214e8b04321603b3df60c
+TARGET_MODEL_ID=Athithya117/Qwen3-8B-AWQ
+TARGET_MODEL_REVISION=3576ac80a4ea387dbe841fb6c864416e3da45ee0
 
-EAGLE_MODEL_ID=AngelSlim/Qwen3-4B_eagle3
-EAGLE_MODEL_REVISION=616a3645a78a917068520ab69882b22c9c419096
+EAGLE_MODEL_ID=Athithya117/Qwen3-8B-from-Qwen3-8B_regen-speculators.eagle31-qwen3arch-ckpt1
+EAGLE_MODEL_REVISION=7d9f0468c1c56a651ab092e5f479f25b4db96f68
 
-GUARD_MODEL_ID=Athithya117/Vela-1.0-Encoder-307M-Guard
-GUARD_MODEL_REVISION=702622b1a6e9ec3e2bff7a7583e7eda5a4b9e9db
+GUARD_MODEL_ID=Athithya117/Llama-Prompt-Guard-2-22M-onnx
+GUARD_MODEL_REVISION=4b05eb226761518d4675aa2176c8db9d445b960a

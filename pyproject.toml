@@ -1,10 +1,9 @@
-
 [project]
 name = "secure-llm-deploy"
-version = "0.1.0"
+version = "0.1.1"
 description = "Secure single-GPU LLM serving with CPU prompt-injection defense and speculative decoding benchmarks"
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12,<3.15"
 authors = [
     { name = "Athithya" },
 ]
@@ -80,6 +79,7 @@ asyncio_default_test_loop_scope = "function"
 markers = [
     "unit: CPU-only unit tests",
     "api: API tests using mocked inference and process dependencies",
+    "integration: tests that load real local model artifacts or a container",
 ]
 
 [tool.coverage.run]
@@ -90,7 +90,6 @@ source = ["secure_llm_deploy"]
 show_missing = true
 skip_covered = true
 
-
 [tool.mypy]
 python_version = "3.12"
 files = [
@@ -99,7 +98,6 @@ files = [
 ]
 mypy_path = "$MYPY_CONFIG_FILE_DIR/image/src"
 explicit_package_bases = true
-
 plugins = ["pydantic.mypy"]
 strict = true
 warn_unused_configs = true
