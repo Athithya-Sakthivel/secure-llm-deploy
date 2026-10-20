@@ -47,6 +47,7 @@ jobs:
 
   build-scan-sign:
     name: Build, scan, sign, and attest
+    needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -104,7 +105,8 @@ jobs:
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: ./image
+          context: .
+          file: image/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
