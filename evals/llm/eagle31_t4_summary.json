@@ -1,0 +1,75 @@
+[
+  {
+    "config": "baseline",
+    "k": null,
+    "trial_throughputs_tok_s": [
+      35.66399346197144,
+      35.99358596885083,
+      36.54462180835482
+    ],
+    "median_tok_s": 35.99358596885083,
+    "speedup_vs_baseline_pct": 0.0,
+    "combined_acceptance_metrics": null,
+    "token_id_comparison_vs_baseline_trial1": {
+      "exact_prompt_matches": 8,
+      "prompts_compared": 8,
+      "exact_prompt_match_pct": 100.0,
+      "token_position_agreement_pct": 100.0,
+      "mismatched_prompt_numbers": []
+    }
+  },
+  {
+    "config": "eagle3_k2",
+    "k": 2,
+    "trial_throughputs_tok_s": [
+      58.65894154680798,
+      56.7102515775162,
+      54.78319078431358
+    ],
+    "median_tok_s": 56.7102515775162,
+    "speedup_vs_baseline_pct": 57.556548065518555,
+    "combined_acceptance_metrics": {
+      "draft_rounds_total": 1569,
+      "proposed_draft_tokens_total": 3138,
+      "accepted_draft_tokens_total": 1497,
+      "mean_acceptance_length": 1.9541108986615678,
+      "draft_token_acceptance_rate_pct": 47.70554493307839
+    },
+    "token_id_comparison_vs_baseline_trial1": {
+      "exact_prompt_matches": 7,
+      "prompts_compared": 8,
+      "exact_prompt_match_pct": 87.5,
+      "token_position_agreement_pct": 96.38671875,
+      "mismatched_prompt_numbers": [
+        8
+      ]
+    }
+  },
+  {
+    "config": "eagle3_k3",
+    "k": 3,
+    "trial_throughputs_tok_s": [
+      52.656339519280436,
+      51.44100366134349,
+      54.03291666170955
+    ],
+    "median_tok_s": 52.656339519280436,
+    "speedup_vs_baseline_pct": 46.293674558710826,
+    "combined_acceptance_metrics": {
+      "draft_rounds_total": 1446,
+      "proposed_draft_tokens_total": 4338,
+      "accepted_draft_tokens_total": 1629,
+      "mean_acceptance_length": 2.1265560165975104,
+      "draft_token_acceptance_rate_pct": 37.551867219917014
+    },
+    "token_id_comparison_vs_baseline_trial1": {
+      "exact_prompt_matches": 7,
+      "prompts_compared": 8,
+      "exact_prompt_match_pct": 87.5,
+      "token_position_agreement_pct": 96.38671875,
+      "mismatched_prompt_numbers": [
+        8
+      ]
+    }
+  }
+]
