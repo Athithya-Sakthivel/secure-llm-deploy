@@ -88,9 +88,8 @@ The gateway is the sole trust boundary. vLLM binds only to `127.0.0.1:8001` and 
 Run all commands from the repository root.
 
 ```bash
-# Build
-docker buildx build --platform linux/amd64 --load \
-  --file image/Dockerfile --tag secure-llm-deploy:local .
+# Pull the published image (digest-pinned, multi-arch)
+docker pull ghcr.io/athithya-sakthivel/secure-llm-deploy@sha256:c54785589e8df5531eb292e5a257a25b6619254bf2f7120651d1ba65074dc64a
 
 # Configure (generates two distinct random keys; never commit this file)
 cat > .env.local <<EOF
@@ -102,10 +101,11 @@ chmod 600 .env.local
 
 # Run (gateway bound to loopback only)
 docker run --rm --gpus all --env-file .env.local \
-  -p 127.0.0.1:8000:8000 --name secure-llm-deploy secure-llm-deploy:local
+  -p 127.0.0.1:8000:8000 --name secure-llm-deploy \
+  ghcr.io/athithya-sakthivel/secure-llm-deploy@sha256:c54785589e8df5531eb292e5a257a25b6619254bf2f7120651d1ba65074dc64a
 ```
 
-**Smoke tests:** `SERVE_MODE=both bash ./evals/llm/smoke-tests.sh`
+**Smoke tests:** `SERVE_MODE=both bash evals/llm/smoke-tests.sh`
 
 ---
 
